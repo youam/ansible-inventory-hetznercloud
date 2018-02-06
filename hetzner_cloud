@@ -1,0 +1,108 @@
+#!/usr/bin/env python
+
+#   hetzner_cloud ansible dynamic inventory
+#   Copyright (C) 2018 Uli Martens <uli@youam.net>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+from __future__ import (absolute_import, print_function)
+
+import json
+import math
+import requests
+import os
+
+
+def main():
+    r = hcloud_servers()
+    print(json.dumps(hcloud_hosts( r ), indent=2))
+
+
+def hcloud_hosts(servers):
+    inventory = {
+        'all': {
+            'hosts': [],
+            'vars': {},
+            },
+        '_meta': {
+            'hostvars': {
+                }
+            }
+        }
+
+    for server in servers:
+        name = server['name']
+
+        inventory['all']['hosts'].append( name )
+
+        # location based group
+        loc = server['datacenter']['name']
+        if not loc in inventory:
+            inventory[loc] = {
+                    'hosts': [],
+                    'vars': {
+                        'hetzner_cloud_location': loc,
+                        'hetzner_cloud_country': server['datacenter']['location']['country']
+                        }
+                    }
+        inventory[ loc ]['hosts'].append( name )
+
+        # server type based group
+        typ = server['server_type']['name']
+        if not typ in inventory:
+            inventory[typ] = {
+                    'hosts': [],
+                    'vars': {
+                        'hetzner_cloud_cores': server['server_type']['cores'],
+                        'hetnzer_cloud_disk': int(math.ceil(server['server_type']['disk']*1000*1000/4096)*4096*1024),
+                        'hetzner_cloud_memory': int(server['server_type']['memory']*1000*1000*1024),
+                        }
+                    }
+        inventory[ typ ]['hosts'].append( name )
+
+        inventory['_meta']['hostvars'][name] = {
+                'ansible_ssh_host': server['public_net']['ipv4']['ip'],
+                'hetzner_cloud_created': server['created'],
+                'hetzner_cloud_id': server['id'],
+                'hetzner_cloud_image_name': server['image']['name'],
+                'hetzner_cloud_image_os_flavor': server['image']['os_flavor'],
+                'hetzner_cloud_image_os_version': server['image']['os_version'],
+                'hetzner_cloud_public_ipv4': server['public_net']['ipv4']['ip'],
+                'hetzner_cloud_public_ipv6': server['public_net']['ipv6']['ip'],
+                # FIXME is this actually host_based or is that server-type based?
+                'hetzner_cloud_storage_type': server['server_type']['storage_type']
+                }
+        if server['backup_window'] is not None:
+            inventory['_meta']['hostvars'][name]['hetzner_cloud_backup_window'] = server['backup_window']
+    return inventory
+
+
+def hcloud_servers():
+    headers = {'Authorization': 'Bearer %s' % api_token()}
+
+    r = requests.get('https://api.hetzner.cloud/v1/servers', headers=headers)
+    r.raise_for_status()
+
+    meta = r.json()['meta']
+    if meta['pagination']['last_page'] != 1:
+        raise('not implemented') # FIXME
+    return r.json()['servers']
+
+
+def api_token():
+    return os.environ['HCLOUD_API_TOKEN']
+
+
+if __name__ == '__main__':
+    main()
